@@ -1,13 +1,16 @@
 "use client"
 
 import { useState } from "react"
+import { toast } from "sonner"
 import { useGame } from "@/lib/game-store"
 import { createClient, generateRoomCode, COLORS, getColorHex, getColorGlow } from "@/lib/supabase"
-import { MAPS, HATS, SKINS } from "@/lib/game-data"
+import { MAPS } from "@/lib/game-data"
+import { validatePlayerName, validateRoomCode } from "@/lib/validations"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { CosmeticsSelector } from "@/components/cosmetics-selector"
-import { Sparkles, Users, Play, Zap, Palette, Volume2 } from "lucide-react"
+import { Spinner } from "@/components/ui/spinner"
+import { Sparkles, Users, Play, Zap, Palette, Volume2, Loader2 } from "lucide-react"
 
 export function HomeScreen() {
   const game = useGame()
@@ -24,10 +27,14 @@ export function HomeScreen() {
   const supabase = createClient()
 
   async function handleCreate() {
-    if (!name.trim()) {
-      setError("Enter your name, crewmate!")
+    const nameValidation = validatePlayerName(name)
+    if (!nameValidation.success) {
+      const errorMessage = nameValidation.error.errors[0]?.message || "Invalid name"
+      setError(errorMessage)
+      toast.error(errorMessage)
       return
     }
+    
     setLoading(true)
     setError("")
 
@@ -44,32 +51,43 @@ export function HomeScreen() {
       const { error: playerErr } = await supabase.from("players").insert({
         room_id: room.id,
         player_id: game.playerId,
-        name: name.trim(),
+        name: nameValidation.data,
         color,
         is_host: true,
       })
 
       if (playerErr) throw playerErr
 
-      game.setPlayerInfo(name.trim(), color)
+      game.setPlayerInfo(nameValidation.data, color)
       game.setRoom(room)
+      toast.success(`Room ${code} created!`)
       game.setScreen("lobby")
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to create room")
+      const errorMessage = err instanceof Error ? err.message : "Failed to create room"
+      setError(errorMessage)
+      toast.error(errorMessage)
     } finally {
       setLoading(false)
     }
   }
 
   async function handleJoin() {
-    if (!name.trim()) {
-      setError("Enter your name, crewmate!")
+    const nameValidation = validatePlayerName(name)
+    if (!nameValidation.success) {
+      const errorMessage = nameValidation.error.errors[0]?.message || "Invalid name"
+      setError(errorMessage)
+      toast.error(errorMessage)
       return
     }
-    if (!joinCode.trim()) {
-      setError("Enter a room code!")
+    
+    const codeValidation = validateRoomCode(joinCode)
+    if (!codeValidation.success) {
+      const errorMessage = codeValidation.error.errors[0]?.message || "Invalid room code"
+      setError(errorMessage)
+      toast.error(errorMessage)
       return
     }
+    
     setLoading(true)
     setError("")
 
@@ -77,17 +95,19 @@ export function HomeScreen() {
       const { data: room, error: roomErr } = await supabase
         .from("rooms")
         .select()
-        .eq("code", joinCode.toUpperCase())
+        .eq("code", codeValidation.data)
         .single()
 
       if (roomErr || !room) {
         setError("Room not found!")
+        toast.error("Room not found!")
         setLoading(false)
         return
       }
 
       if (room.status !== "lobby") {
         setError("Game already in progress!")
+        toast.error("Game already in progress!")
         setLoading(false)
         return
       }
@@ -102,22 +122,28 @@ export function HomeScreen() {
       if (takenColors.includes(color)) {
         const available = COLORS.find((c) => !takenColors.includes(c.name))
         finalColor = available?.name || color
+        if (finalColor !== color) {
+          toast.info(`Your color was taken. Changed to ${finalColor}`)
+        }
       }
 
       const { error: playerErr } = await supabase.from("players").insert({
         room_id: room.id,
         player_id: game.playerId,
-        name: name.trim(),
+        name: nameValidation.data,
         color: finalColor,
       })
 
       if (playerErr) throw playerErr
 
-      game.setPlayerInfo(name.trim(), finalColor)
+      game.setPlayerInfo(nameValidation.data, finalColor)
       game.setRoom(room)
+      toast.success(`Joined room ${codeValidation.data}!`)
       game.setScreen("lobby")
     } catch (err: unknown) {
-      setError(err instanceof Error ? err.message : "Failed to join room")
+      const errorMessage = err instanceof Error ? err.message : "Failed to join room"
+      setError(errorMessage)
+      toast.error(errorMessage)
     } finally {
       setLoading(false)
     }
@@ -160,65 +186,77 @@ export function HomeScreen() {
           <div className="space-y-5">
             {/* Name Input */}
             <div>
-              <label className="mb-2 flex items-center gap-2 text-sm text-cyan-300">
-                <Users className="h-4 w-4" />
+              <label htmlFor="player-name" className="mb-2 flex items-center gap-2 text-sm text-cyan-300">
+                <Users className="h-4 w-4" aria-hidden="true" />
                 Your Name
               </label>
               <Input
+                id="player-name"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Enter crewmate name..."
                 maxLength={16}
+                autoComplete="username"
                 className="h-12 border-cyan-500/50 bg-black/50 text-lg text-cyan-100 placeholder:text-cyan-700 focus:border-cyan-400 focus:ring-cyan-400/30"
+                aria-describedby={error ? "name-error" : undefined}
               />
             </div>
 
             {/* Color & Cosmetics Row */}
             <div className="flex gap-4">
               {/* Quick Color Picker */}
-              <div className="flex-1">
-                <label className="mb-2 flex items-center gap-2 text-sm text-cyan-300">
-                  <Palette className="h-4 w-4" />
+              <fieldset className="flex-1">
+                <legend className="mb-2 flex items-center gap-2 text-sm text-cyan-300">
+                  <Palette className="h-4 w-4" aria-hidden="true" />
                   Color
-                </label>
-                <div className="flex flex-wrap gap-2">
+                </legend>
+                <div className="flex flex-wrap gap-2" role="radiogroup" aria-label="Select player color">
                   {COLORS.slice(0, 6).map((c) => (
                     <button
                       key={c.name}
                       onClick={() => setColor(c.name)}
-                      className="h-10 w-10 rounded-full transition-all hover:scale-110"
+                      className="h-10 w-10 rounded-full transition-all hover:scale-110 focus:outline-none focus:ring-2 focus:ring-white focus:ring-offset-2 focus:ring-offset-black"
                       style={{
                         backgroundColor: c.hex,
                         boxShadow: color === c.name ? c.glow : "none",
                         border: color === c.name ? "3px solid white" : "3px solid transparent",
                       }}
+                      aria-label={c.name}
+                      aria-pressed={color === c.name}
+                      role="radio"
+                      aria-checked={color === c.name}
                     />
                   ))}
                   <button
                     onClick={() => setShowCosmetics(true)}
-                    className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-dashed border-cyan-500/50 text-cyan-500 transition-all hover:border-cyan-400 hover:text-cyan-400"
+                    className="flex h-10 w-10 items-center justify-center rounded-full border-2 border-dashed border-cyan-500/50 text-cyan-500 transition-all hover:border-cyan-400 hover:text-cyan-400 focus:outline-none focus:ring-2 focus:ring-cyan-400"
+                    aria-label="More colors and cosmetics"
                   >
                     +
                   </button>
                 </div>
-              </div>
+              </fieldset>
             </div>
 
             {/* Map Selection */}
-            <div>
-              <label className="mb-2 block text-sm text-cyan-300">Select Map</label>
-              <div className="grid grid-cols-3 gap-2">
+            <fieldset>
+              <legend className="mb-2 block text-sm text-cyan-300">Select Map</legend>
+              <div className="grid grid-cols-3 gap-2" role="radiogroup" aria-label="Select game map">
                 {MAPS.slice(0, 6).map((map) => (
                   <button
                     key={map.id}
                     onClick={() => setSelectedMap(map.id)}
-                    className={`rounded-lg border p-3 text-center transition-all ${
+                    className={`rounded-lg border p-3 text-center transition-all focus:outline-none focus:ring-2 focus:ring-cyan-400 ${
                       selectedMap === map.id
                         ? "border-cyan-400 bg-cyan-500/20"
                         : "border-gray-700 bg-gray-800/50 hover:border-gray-600"
                     }`}
+                    aria-pressed={selectedMap === map.id}
+                    role="radio"
+                    aria-checked={selectedMap === map.id}
+                    aria-label={map.name}
                   >
-                    <div className="mb-1 text-2xl" style={{ color: map.color }}>
+                    <div className="mb-1 text-2xl" style={{ color: map.color }} aria-hidden="true">
                       {map.id === "starship" && "🚀"}
                       {map.id === "research_lab" && "🔬"}
                       {map.id === "cyber_city" && "🌃"}
@@ -230,17 +268,27 @@ export function HomeScreen() {
                   </button>
                 ))}
               </div>
-            </div>
+            </fieldset>
 
             {/* Buttons */}
             <div className="space-y-3 pt-2">
               <Button
                 onClick={handleCreate}
                 disabled={loading}
-                className="h-14 w-full border-2 border-cyan-500 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-lg font-bold text-cyan-100 transition-all hover:from-cyan-500/40 hover:to-blue-500/40 hover:shadow-[0_0_40px_#00ffff]"
+                className="h-14 w-full border-2 border-cyan-500 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-lg font-bold text-cyan-100 transition-all hover:from-cyan-500/40 hover:to-blue-500/40 hover:shadow-[0_0_40px_#00ffff] disabled:opacity-50 disabled:cursor-not-allowed"
+                aria-busy={loading}
               >
-                <Play className="mr-2 h-5 w-5" />
-                {loading ? "CREATING..." : "CREATE GAME"}
+                {loading ? (
+                  <>
+                    <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
+                    <span>CREATING...</span>
+                  </>
+                ) : (
+                  <>
+                    <Play className="mr-2 h-5 w-5" aria-hidden="true" />
+                    <span>CREATE GAME</span>
+                  </>
+                )}
               </Button>
 
               <div className="flex items-center gap-3">
@@ -251,24 +299,34 @@ export function HomeScreen() {
 
               <div className="flex gap-2">
                 <Input
+                  id="room-code"
                   value={joinCode}
                   onChange={(e) => setJoinCode(e.target.value.toUpperCase())}
                   placeholder="CODE"
                   maxLength={6}
+                  autoComplete="off"
+                  aria-label="Room code"
                   className="h-12 flex-1 border-[#ff00ff]/50 bg-black/50 text-center font-mono text-xl tracking-widest text-[#ff00ff] placeholder:text-[#ff00ff]/30"
                 />
                 <Button
                   onClick={handleJoin}
                   disabled={loading}
-                  className="h-12 border-2 border-[#ff00ff] bg-[#ff00ff]/20 px-6 text-[#ff00ff] transition-all hover:bg-[#ff00ff]/40 hover:shadow-[0_0_30px_#ff00ff]"
+                  className="h-12 border-2 border-[#ff00ff] bg-[#ff00ff]/20 px-6 text-[#ff00ff] transition-all hover:bg-[#ff00ff]/40 hover:shadow-[0_0_30px_#ff00ff] disabled:opacity-50 disabled:cursor-not-allowed"
+                  aria-busy={loading}
                 >
-                  JOIN
+                  {loading ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" /> : "JOIN"}
                 </Button>
               </div>
             </div>
 
             {error && (
-              <p className="text-center text-sm text-red-400" style={{ textShadow: "0 0 10px #ff0033" }}>
+              <p 
+                id="name-error"
+                className="text-center text-sm text-red-400" 
+                style={{ textShadow: "0 0 10px #ff0033" }}
+                role="alert"
+                aria-live="polite"
+              >
                 {error}
               </p>
             )}

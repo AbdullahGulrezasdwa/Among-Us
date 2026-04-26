@@ -1,15 +1,18 @@
 "use client"
 
 import { useEffect, useState, useRef } from "react"
+import { toast } from "sonner"
 import { useGame } from "@/lib/game-store"
 import { createClient, getColorHex, getColorGlow, type Player, type Message } from "@/lib/supabase"
-import { MAPS, ROLES, DEFAULT_SETTINGS } from "@/lib/game-data"
+import { MAPS, DEFAULT_SETTINGS } from "@/lib/game-data"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 import { VoiceChatPanel } from "@/components/voice-chat-panel"
 import { Minimap } from "@/components/minimap"
 import { CosmeticsSelector } from "@/components/cosmetics-selector"
-import { Crown, Copy, Check, Settings, Users, MessageSquare, Map, Palette, Volume2, Play, LogOut, Sparkles } from "lucide-react"
+import { ErrorBoundary } from "@/components/error-boundary"
+import { ConnectionStatus } from "@/components/connection-status"
+import { Crown, Copy, Check, Settings, Users, MessageSquare, Map, Palette, Play, LogOut, Sparkles, Loader2 } from "lucide-react"
 
 export function LobbyScreen() {
   const game = useGame()
@@ -133,31 +136,43 @@ export function LobbyScreen() {
   async function handleStart() {
     if (!game.room || !isHost) return
     if (game.players.length < 4) {
-      alert("Need at least 4 players to start!")
+      toast.error("Need at least 4 players to start!")
       return
     }
 
     setStarting(true)
+    toast.loading("Starting game...", { id: "game-start" })
 
-    const playerIds = game.players.map((p) => p.player_id)
-    const impostorCount = Math.min(settings.impostors, Math.floor(game.players.length / 3))
-    const shuffled = [...playerIds].sort(() => Math.random() - 0.5)
-    const impostors = shuffled.slice(0, impostorCount)
+    try {
+      const playerIds = game.players.map((p) => p.player_id)
+      const impostorCount = Math.min(settings.impostors, Math.floor(game.players.length / 3))
+      const shuffled = [...playerIds].sort(() => Math.random() - 0.5)
+      const impostors = shuffled.slice(0, impostorCount)
 
-    for (const pid of playerIds) {
-      await supabase
-        .from("players")
-        .update({
-          role: impostors.includes(pid) ? "impostor" : "crew",
-          tasks_total: settings.shortTasks + settings.longTasks,
-          tasks_done: 0,
-        })
-        .eq("room_id", game.room.id)
-        .eq("player_id", pid)
+      for (const pid of playerIds) {
+        const { error } = await supabase
+          .from("players")
+          .update({
+            role: impostors.includes(pid) ? "impostor" : "crew",
+            tasks_total: settings.shortTasks + settings.longTasks,
+            tasks_done: 0,
+          })
+          .eq("room_id", game.room.id)
+          .eq("player_id", pid)
+        
+        if (error) throw error
+      }
+
+      const { error: roomError } = await supabase.from("rooms").update({ status: "playing" }).eq("id", game.room.id)
+      if (roomError) throw roomError
+      
+      toast.success("Game started!", { id: "game-start" })
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : "Failed to start game"
+      toast.error(errorMessage, { id: "game-start" })
+    } finally {
+      setStarting(false)
     }
-
-    await supabase.from("rooms").update({ status: "playing" }).eq("id", game.room.id)
-    setStarting(false)
   }
 
   async function handleSendChat() {
@@ -178,21 +193,32 @@ export function LobbyScreen() {
   async function handleLeave() {
     if (!game.room) return
 
-    await supabase.from("players").delete().eq("room_id", game.room.id).eq("player_id", game.playerId)
+    try {
+      await supabase.from("players").delete().eq("room_id", game.room.id).eq("player_id", game.playerId)
 
-    if (isHost) {
-      await supabase.from("rooms").delete().eq("id", game.room.id)
+      if (isHost) {
+        await supabase.from("rooms").delete().eq("id", game.room.id)
+      }
+
+      toast.success("Left the room")
+      game.reset()
+      game.setScreen("home")
+    } catch (err) {
+      toast.error("Failed to leave room")
     }
-
-    game.reset()
-    game.setScreen("home")
   }
 
   function handleCopyCode() {
     if (game.room?.code) {
       navigator.clipboard.writeText(game.room.code)
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
+        .then(() => {
+          setCopied(true)
+          toast.success("Room code copied!")
+          setTimeout(() => setCopied(false), 2000)
+        })
+        .catch(() => {
+          toast.error("Failed to copy code")
+        })
     }
   }
 
@@ -200,6 +226,8 @@ export function LobbyScreen() {
   const allReady = readyCount === game.players.length && game.players.length >= 4
 
   return (
+    <ErrorBoundary>
+      <ConnectionStatus />
     <div className="flex min-h-screen flex-col p-4 lg:flex-row lg:gap-6">
       {/* Left Panel - Room Info & Players */}
       <div className="flex-1 space-y-4">
@@ -389,10 +417,20 @@ export function LobbyScreen() {
             <Button
               onClick={handleStart}
               disabled={!allReady || starting}
-              className="flex-1 border-2 border-cyan-500 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-100 transition-all hover:from-cyan-500/40 hover:to-blue-500/40 hover:shadow-[0_0_40px_#00ffff] disabled:opacity-50"
+              className="flex-1 border-2 border-cyan-500 bg-gradient-to-r from-cyan-500/20 to-blue-500/20 text-cyan-100 transition-all hover:from-cyan-500/40 hover:to-blue-500/40 hover:shadow-[0_0_40px_#00ffff] disabled:opacity-50 disabled:cursor-not-allowed"
+              aria-busy={starting}
             >
-              <Play className="mr-2 h-5 w-5" />
-              {starting ? "STARTING..." : "START GAME"}
+              {starting ? (
+                <>
+                  <Loader2 className="mr-2 h-5 w-5 animate-spin" aria-hidden="true" />
+                  <span>STARTING...</span>
+                </>
+              ) : (
+                <>
+                  <Play className="mr-2 h-5 w-5" aria-hidden="true" />
+                  <span>START GAME</span>
+                </>
+              )}
             </Button>
           )}
         </div>
@@ -546,5 +584,6 @@ export function LobbyScreen() {
         />
       )}
     </div>
+    </ErrorBoundary>
   )
 }
